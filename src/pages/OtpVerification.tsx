@@ -3,16 +3,18 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import Icon from '../components/Icon'
 import { useAuth } from '../context/AuthContext'
 import { useToastContext } from '../context/ToastContext'
+import { getAccessToken } from '../services/api'
 
 export default function OtpVerification() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { verifyEmail, isAuthenticated } = useAuth()
+  const { verifyEmail, resendVerificationCode, isAuthenticated } = useAuth()
   const { addToast } = useToastContext()
 
   const email = (location.state as { email?: string } | null)?.email || 'your email'
   const [otp, setOtp] = useState<string[]>(Array(6).fill(''))
   const [isVerifying, setIsVerifying] = useState(false)
+  const [isResending, setIsResending] = useState(false)
   const [isError, setIsError] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const inputRefs = useRef<(HTMLInputElement | null)[]>([])
@@ -74,13 +76,22 @@ export default function OtpVerification() {
     focusInput(nextIndex)
   }
 
-  const handleResend = () => {
+  const handleResend = useCallback(async () => {
+    if (isResending) return
+    if (!getAccessToken()) {
+      addToast('Session expired. Please sign in again.', 'error')
+      navigate('/sign-in', { replace: true })
+      return
+    }
+    setIsResending(true)
     setOtp(Array(6).fill(''))
     setIsError(false)
     setErrorMsg('')
-    addToast('Code resent successfully', 'success')
+    await resendVerificationCode()
+    setIsResending(false)
+    addToast('A new code has been sent to your email.', 'success')
     setTimeout(() => focusInput(0), 50)
-  }
+  }, [isResending, resendVerificationCode, addToast, navigate, focusInput])
 
   const handleVerify = async () => {
     const code = otp.join('')
@@ -90,18 +101,14 @@ export default function OtpVerification() {
       return
     }
 
-    // TODO: Replace with real backend verification
     setIsVerifying(true)
-
-    await new Promise(resolve => setTimeout(resolve, 1500))
-
-    const ok = verifyEmail(code)
+    const ok = await verifyEmail(code)
     if (ok) {
       navigate('/', { replace: true })
     } else {
       setIsVerifying(false)
       setIsError(true)
-      setErrorMsg('Verification failed. Please try again.')
+      setErrorMsg('Invalid or expired code. Please try again.')
     }
   }
 
@@ -178,12 +185,17 @@ export default function OtpVerification() {
           <div className="flex items-center justify-center gap-1.5 font-body-md">
             <span className="text-secondary text-sm">Didn't receive the code?</span>
             <button
-              className="text-primary hover:text-primary/80 font-semibold transition-colors duration-200 focus:outline-none focus:underline text-sm disabled:opacity-50"
-              disabled={isVerifying}
+              className="text-primary hover:text-primary/80 font-semibold transition-colors duration-200 focus:outline-none focus:underline text-sm disabled:opacity-50 flex items-center gap-1"
+              disabled={isVerifying || isResending}
               onClick={handleResend}
               aria-label="Resend verification code"
             >
-              Resend Code
+              {isResending ? (
+                <>
+                  <span className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" aria-hidden="true" />
+                  Sending...
+                </>
+              ) : 'Resend Code'}
             </button>
           </div>
         </div>

@@ -1,36 +1,41 @@
-import { useState, useCallback, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { useState, useCallback } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { useGoogleLogin } from '@react-oauth/google'
 import Icon from '../components/Icon'
 import { useAuth } from '../context/AuthContext'
 import GoogleIcon from '../components/GoogleIcon'
 import AppleIcon from '../components/AppleIcon'
 
 export default function SignIn() {
-  const { signIn } = useAuth()
+  const navigate = useNavigate()
+  const { signIn, signInWithGoogle } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
   const [error, setError] = useState('')
-  const [lockedUntil, setLockedUntil] = useState<number | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [oauthLoading, setOauthLoading] = useState<'google' | 'apple' | null>(null)
   const [shakeKey, setShakeKey] = useState(0)
   const [touched, setTouched] = useState({ email: false, password: false })
 
-  const emailError = touched.email && email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  const googleLogin = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      const result = await signInWithGoogle(tokenResponse.access_token)
+      setOauthLoading(null)
+      if (!result.success) {
+        setError(result.error)
+        setShakeKey(k => k + 1)
+      }
+    },
+    onError: () => {
+      setOauthLoading(null)
+      setError('Google sign-in failed. Please try again.')
+      setShakeKey(k => k + 1)
+    },
+  })
 
-  useEffect(() => {
-    if (error) {
-      const timer = setInterval(() => {
-        if (lockedUntil && Date.now() >= lockedUntil) {
-          setError('')
-          setLockedUntil(null)
-        }
-      }, 1000)
-      return () => clearInterval(timer)
-    }
-  }, [error, lockedUntil])
+  const emailError = touched.email && email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 
   const validate = () => {
     if (!email.trim() || !password) {
@@ -41,35 +46,32 @@ export default function SignIn() {
     return true
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     if (!validate()) return
     setIsSubmitting(true)
-    const result = signIn(email.trim(), password, rememberMe)
+    const result = await signIn(email.trim(), password, rememberMe)
     setIsSubmitting(false)
     if (!result.success) {
+      if (result.needsVerification) {
+        navigate('/verify-email', { state: { email: result.pendingEmail ?? email.trim() } })
+        return
+      }
       setError(result.error)
       setShakeKey(k => k + 1)
-      if (result.lockedUntil) setLockedUntil(result.lockedUntil)
     }
   }
 
-  const handleOAuth = useCallback((provider: 'google' | 'apple') => {
-    setOauthLoading(provider)
+  const handleApple = useCallback(() => {
+    setOauthLoading('apple')
     setError('')
-
     setTimeout(() => {
       setOauthLoading(null)
-      setError(`${provider === 'google' ? 'Google' : 'Apple'} sign-in failed. Please try again.`)
+      setError('Apple sign-in is not yet available.')
       setShakeKey(k => k + 1)
-    }, 1500)
+    }, 500)
   }, [])
-
-  const formatLockout = (until: number) => {
-    const remaining = Math.ceil((until - Date.now()) / 60000)
-    return `${remaining} minute${remaining === 1 ? '' : 's'}`
-  }
 
   const inputBase = 'w-full bg-surface-container-low border rounded-xl px-4 py-3.5 md:py-3 font-body-md text-body-md text-on-surface outline-none transition-all duration-200 placeholder:text-secondary-fixed-dim'
   const inputNormal = 'border-secondary-fixed focus:border-primary focus:ring-2 focus:ring-primary/20'
@@ -106,12 +108,7 @@ export default function SignIn() {
             aria-live="polite"
           >
             <Icon icon="error" className="text-xl shrink-0" aria-hidden="true" />
-            <p className="font-body-md text-sm flex-1">
-              {error}
-              {lockedUntil && Date.now() < lockedUntil && (
-                <span className="block text-xs mt-1 opacity-80">Lockout expires in {formatLockout(lockedUntil)}</span>
-              )}
-            </p>
+            <p className="font-body-md text-sm flex-1">{error}</p>
           </div>
         )}
 
@@ -119,7 +116,7 @@ export default function SignIn() {
         <div className="flex flex-col gap-3">
           <button
             type="button"
-            onClick={() => handleOAuth('google')}
+            onClick={() => { setError(''); setOauthLoading('google'); googleLogin() }}
             disabled={oauthLoading !== null}
             aria-label="Continue with Google"
             className="w-full flex items-center justify-center gap-3 py-3.5 md:py-3 rounded-xl border border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low transition-all duration-200 font-label-md text-label-md text-on-surface disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary/20 focus:outline-none"
@@ -133,7 +130,7 @@ export default function SignIn() {
           </button>
           <button
             type="button"
-            onClick={() => handleOAuth('apple')}
+            onClick={handleApple}
             disabled={oauthLoading !== null}
             aria-label="Continue with Apple"
             className="w-full flex items-center justify-center gap-3 py-3.5 md:py-3 rounded-xl border border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low transition-all duration-200 font-label-md text-label-md text-on-surface disabled:opacity-50 disabled:cursor-not-allowed focus:ring-2 focus:ring-primary/20 focus:outline-none"

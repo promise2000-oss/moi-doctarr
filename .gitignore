@@ -1,6 +1,8 @@
 node_modules
+core-backend/node_modules
 dist
 .env
 .env.local
+core-backend/.env
 *.log
 .DS_Store

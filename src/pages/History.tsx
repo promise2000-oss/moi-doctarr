@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import Icon from '../components/Icon'
 import { usePersistState } from '../hooks/usePersistState'
+import { api } from '../services/api'
 
 type Tab = 'sessions' | 'medical'
 
@@ -28,22 +29,63 @@ const tabs: { key: Tab; label: string; icon: string }[] = [
   { key: 'medical', label: 'Medical History', icon: 'assignment' },
 ]
 
+interface BackendTriage {
+  _id: string
+  symptoms: string[]
+  duration: string
+  severity: 'Mild' | 'Moderate' | 'Severe'
+  notes?: string
+  triageStatus: { level: 'Emergency' | 'Urgent' | 'Non-Urgent' }
+  actionPlan: string
+  createdAt: string
+}
+
+function severityLabel(level: string): string {
+  if (level === 'Emergency' || level === 'Urgent') return 'Urgent'
+  if (level === 'Moderate') return 'Moderate'
+  return 'Stable'
+}
+
 function SessionsView() {
   const navigate = useNavigate()
   const { sessions } = useAuth()
+  const [backendSessions, setBackendSessions] = useState<BackendTriage[]>([])
+  const [loadingHistory, setLoadingHistory] = useState(true)
   const [activeFilter, setActiveFilter] = useState('All Sessions')
   const [currentPage, setCurrentPage] = useState(1)
 
+  useEffect(() => {
+    api.get<{ msg: string; data: BackendTriage[] }>('/triage/list')
+      .then(res => setBackendSessions(res.data || []))
+      .catch(() => {/* fall back to local sessions */})
+      .finally(() => setLoadingHistory(false))
+  }, [])
+
+  // Show backend records if available, otherwise fall back to local sessions
+  const allSessions = backendSessions.length > 0
+    ? backendSessions.map(s => ({
+        id: s._id,
+        condition: s.symptoms.join(', '),
+        description: s.actionPlan,
+        date: new Date(s.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        time: new Date(s.createdAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+        severity: severityLabel(s.triageStatus.level) as 'Urgent' | 'Moderate' | 'Stable',
+        statusLabel: s.triageStatus.level,
+        statusIcon: s.triageStatus.level === 'Emergency' ? 'warning' : s.triageStatus.level === 'Urgent' ? 'info' : 'check_circle',
+        tags: [s.severity, `Duration: ${s.duration}`],
+      }))
+    : sessions
+
   const filteredSessions = activeFilter === 'All Sessions'
-    ? sessions
-    : sessions.filter(s => {
+    ? allSessions
+    : allSessions.filter(s => {
         if (activeFilter === 'Low') return s.severity === 'Stable'
         if (activeFilter === 'Moderate') return s.severity === 'Moderate'
         if (activeFilter === 'High') return s.severity === 'Urgent'
         return true
       })
 
-  const urgentCount = sessions.filter(s => s.severity === 'Urgent').length
+  const urgentCount = allSessions.filter(s => s.severity === 'Urgent').length
 
   return (
     <section className="max-w-container-max-width w-full mx-auto">
@@ -77,7 +119,9 @@ function SessionsView() {
         </div>
       </div>
 
-      {filteredSessions.length === 0 ? (
+      {loadingHistory ? (
+        <div className="flex justify-center py-20"><span className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" /></div>
+      ) : filteredSessions.length === 0 ? (
         <div className="bg-surface-container-lowest rounded-2xl border border-dashed border-outline-variant/50 p-14 text-center">
           <div className="w-20 h-20 mx-auto mb-5 bg-surface-container-low rounded-full flex items-center justify-center text-secondary">
             <Icon icon="history" className="text-4xl" />

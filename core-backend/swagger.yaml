@@ -1,0 +1,463 @@
+openapi: 3.0.3
+info:
+  title: MoiDoctor API
+  version: 1.0.0
+  description: |
+    Backend API for the MoiDoctor application.  
+    All endpoints are prefixed with `/api/v1`.
+
+servers:
+  - url: http://localhost:4455/api/v1
+    description: Local development server
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    User:
+      type: object
+      properties:
+        _id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        age:
+          type: integer
+        gender:
+          type: string
+          enum: [male, female, other]
+        preferences:
+          type: object
+        notifications:
+          type: array
+          items:
+            type: string
+        medications:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              dosage:
+                type: string
+              schedule:
+                type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    SymptomLog:
+      type: object
+      properties:
+        _id:
+          type: string
+        userId:
+          type: string
+        symptomName:
+          type: string
+        severity:
+          type: integer
+          minimum: 1
+          maximum: 10
+        notes:
+          type: string
+        loggedAt:
+          type: string
+          format: date-time
+    Triage:
+      type: object
+      properties:
+        _id:
+          type: string
+        userId:
+          type: string
+        symptoms:
+          type: array
+          items:
+            type: string
+        overallScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+        recommendation:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+paths:
+  /checkHealth:
+    get:
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  msg:
+                    type: string
+                    example: successful
+
+  /auth/manualAuthentication:
+    post:
+      summary: Manual sign‑up  / sign‑in [ for sign-up " type should be SIGNUP_MANUALLY" while for sign-in "type should be SIGNIN_MANUALLY" , countyType should be the name of the country using their ip address  ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password,type, fullName, countryType]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+                type:
+                  type: string
+                fullName:
+                  type: string
+                countryType:
+                  type: string
+      responses:
+        "200":
+          description: Authentication successful
+        "400":
+          description: Invalid request
+
+  /auth/google:
+    post:
+      summary: Google sign‑in / sign‑up
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idToken, email, fullName, countryType]
+              properties:
+                idToken:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                fullName:
+                  type: string
+                countryType:
+                  type: string
+      responses:
+        "200":
+          description: Google auth successful
+
+  /auth/apple:
+    post:
+      summary: Apple sign‑in / sign‑up
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idToken:
+                  type: string
+      responses:
+        "200":
+          description: Apple auth successful
+
+  /auth/verify:
+    post:
+      summary: Verify a user with a verification code
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verificationCode]
+              properties:
+                verificationCode:
+                  type: string
+      responses:
+        "200":
+          description: Verification successful
+
+  /user/listData:
+    get:
+      summary: Get authenticated user data (password omitted)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /user/updateProfile:
+    put:
+      summary: Update user profile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userName:
+                  type: string
+                demographics:
+                  type: object
+                phone:
+                  type: string
+                preference:
+                  type: object
+      responses:
+        "200":
+          description: Profile updated
+
+  /user/forgotPassword:
+    post:
+      summary: Reset password using email and a new password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, verificationCode, newPassword]
+              properties:
+                email:
+                  type: string
+                  format: email
+                verificationCode:
+                  type: string
+                newPassword:
+                  type: string
+      responses:
+        "200":
+          description: Password reset
+
+  /user/notifications:
+    get:
+      summary: List all notifications for the user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of notifications
+
+  /medication/create:
+    post:
+      summary: Add a new medication for the user
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                dosage:
+                  type: string
+                schedule:
+                  type: string
+      responses:
+        "201":
+          description: Medication created
+
+  /medication:
+    get:
+      summary: Retrieve all medications for the user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of medications
+
+  /medication/stop:
+    put:
+      summary: Stop a medication
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [medicationId]
+              properties:
+                medicationId:
+                  type: string
+      responses:
+        "200":
+          description: Medication stopped
+
+  /triage:
+    post:
+      summary: Create a new triage record
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symptoms:
+                  type: array
+                  items:
+                    type: string
+                overallScore:
+                  type: integer
+                recommendation:
+                  type: string
+      responses:
+        "201":
+          description: Triage created
+
+  /triage/history:
+    get:
+      summary: Get full triage and symptom history
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: History data
+
+  /triage/list:
+    get:
+      summary: List all triage records for the authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of triages
+
+  /symptom:
+    post:
+      summary: Log a new symptom
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symptomName:
+                  type: string
+                severity:
+                  type: integer
+                notes:
+                  type: string
+      responses:
+        "201":
+          description: Symptom logged
+
+  /symptom/list:
+    get:
+      summary: List all symptom logs for the authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of symptoms
+
+  /admin/users:
+    get:
+      summary: List all users (passwords omitted)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of users
+
+  /admin/user/role:
+    put:
+      summary: Change a user's role
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, role]
+              properties:
+                userId:
+                  type: string
+                role:
+                  type: string
+      responses:
+        "200":
+          description: Role updated
+
+  /admin/user/blacklist:
+    put:
+      summary: Blacklist a user
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId:
+                  type: string
+      responses:
+        "200":
+          description: User blacklisted
+
+  /admin/user/{id}:
+    get:
+      summary: Retrieve a specific user by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User data
+
+  /user:
+    delete:
+      summary: Permanently delete the authenticated user and related data
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User deleted

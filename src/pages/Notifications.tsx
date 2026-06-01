@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import Icon from '../components/Icon'
+import { api } from '../services/api'
 
 interface Notification {
   id: number
@@ -21,30 +22,24 @@ export default function Notifications() {
   const navigate = useNavigate()
   const { sessions } = useAuth()
 
-  const [notifications, setNotifications] = useState<Notification[]>(() => {
+  const buildLocalNotifications = (): Notification[] => {
     const items: Notification[] = []
     const now = Date.now()
-
-    // Session-based notifications
-    sessions.forEach((s, i) => {
-      if (i < 3) {
-        items.push({
-          id: now + i,
-          category: s.severity === 'Urgent' ? 'Urgency Alerts' : 'Session Updates',
-          barClass: s.severity === 'Urgent' ? 'bg-error' : 'bg-primary',
-          icon: s.severity === 'Urgent' ? 'warning' : 'clinical_notes',
-          iconBg: s.severity === 'Urgent' ? 'bg-error-container' : 'bg-primary-container/10',
-          iconColor: s.severity === 'Urgent' ? 'text-error' : 'text-primary',
-          title: `${s.condition} — ${s.severity}`,
-          time: s.date,
-          body: s.description,
-          actions: [{ label: 'View Details', primary: true, to: '/care-details' }],
-          read: false,
-        })
-      }
+    sessions.slice(0, 3).forEach((s, i) => {
+      items.push({
+        id: now + i,
+        category: s.severity === 'Urgent' ? 'Urgency Alerts' : 'Session Updates',
+        barClass: s.severity === 'Urgent' ? 'bg-error' : 'bg-primary',
+        icon: s.severity === 'Urgent' ? 'warning' : 'clinical_notes',
+        iconBg: s.severity === 'Urgent' ? 'bg-error-container' : 'bg-primary-container/10',
+        iconColor: s.severity === 'Urgent' ? 'text-error' : 'text-primary',
+        title: `${s.condition} — ${s.severity}`,
+        time: s.date,
+        body: s.description,
+        actions: [{ label: 'View Details', primary: true, to: '/care-details' }],
+        read: false,
+      })
     })
-
-    // Health profile prompt
     if (sessions.length === 0) {
       items.push({
         id: now + 100,
@@ -60,25 +55,32 @@ export default function Notifications() {
         read: false,
       })
     }
+    return items
+  }
 
-    if (sessions.length > 0 && sessions.length < 3) {
-      items.push({
-        id: now + 200,
-        category: 'Tips',
-        barClass: 'bg-primary',
-        icon: 'tips_and_updates',
-        iconBg: 'bg-surface-container-high',
-        iconColor: 'text-secondary',
-        title: 'Complete Your Profile',
-        time: 'Ongoing',
-        body: 'Filling out your medical history helps our AI provide more accurate assessments.',
-        actions: [{ label: 'Update Profile', primary: false, to: '/profile' }],
-        read: true,
+  const [notifications, setNotifications] = useState<Notification[]>(buildLocalNotifications)
+
+  // Fetch backend notifications and prepend them
+  useEffect(() => {
+    api.get<{ msg: string; data: { message: string; date: string }[] }>('/user/notifications')
+      .then(res => {
+        if (!res.data?.length) return
+        const backendItems: Notification[] = res.data.map((n, i) => ({
+          id: Date.now() + 1000 + i,
+          category: 'System',
+          barClass: 'bg-tertiary',
+          icon: 'notifications',
+          iconBg: 'bg-surface-container-high',
+          iconColor: 'text-secondary',
+          title: n.message,
+          time: new Date(n.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+          body: '',
+          read: true,
+        }))
+        setNotifications(prev => [...backendItems, ...prev])
       })
-    }
-
-    return items.sort((a, b) => a.id - b.id)
-  })
+      .catch(() => {/* silent — local notifications still show */})
+  }, [])
 
   const [activeTab, setActiveTab] = useState('All')
 

@@ -1,85 +1,110 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
+import { useState, useEffect, useCallback } from 'react'
 import Icon from '../components/Icon'
-import { usePersistState } from '../hooks/usePersistState'
+import { api } from '../services/api'
+import { useToastContext } from '../context/ToastContext'
 
-interface MedSchedule {
+interface BackendMedication {
   id: string
   name: string
   dosage: string
   time: string
-  taken: boolean
+  frequent: 'morning' | 'afternoon' | 'night'
+  supply: string
+  status: boolean
+  startedAt: string
+  stoppedAt?: string
 }
 
-interface Prescription {
-  name: string
-  dosage: string
-  type: string
-  frequency: { icon: string; label: string }[]
-  supplyCurrent: number
-  supplyTotal: number
-  supplyLabel: string
-  icon: string
+const freqConfig: Record<string, { icon: string; label: string }> = {
+  morning: { icon: 'light_mode', label: 'Morning' },
+  afternoon: { icon: 'wb_sunny', label: 'Afternoon' },
+  night: { icon: 'bedtime', label: 'Night' },
+}
+
+const TAKEN_KEY = `doctarr_taken_${new Date().toDateString()}`
+
+function loadTaken(): Record<string, boolean> {
+  try { return JSON.parse(sessionStorage.getItem(TAKEN_KEY) || '{}') } catch { return {} }
+}
+function saveTaken(taken: Record<string, boolean>) {
+  try { sessionStorage.setItem(TAKEN_KEY, JSON.stringify(taken)) } catch {}
 }
 
 export default function MedicationTracker() {
-  const navigate = useNavigate()
-  const { signOut } = useAuth()
-  const [schedule, setSchedule] = usePersistState<MedSchedule[]>('doctarr_med_schedule', [])
-  const [prescriptions, setPrescriptions] = usePersistState<Prescription[]>('doctarr_prescriptions', [])
-
+  const { addToast } = useToastContext()
+  const [medications, setMedications] = useState<BackendMedication[]>([])
+  const [taken, setTaken] = useState<Record<string, boolean>>(loadTaken)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [showForm, setShowForm] = useState(false)
+
   const [medName, setMedName] = useState('')
   const [medDosage, setMedDosage] = useState('')
   const [medTime, setMedTime] = useState('08:00')
-  const [medFrequency, setMedFrequency] = useState('Morning')
+  const [medFrequency, setMedFrequency] = useState<'morning' | 'afternoon' | 'night'>('morning')
   const [medSupply, setMedSupply] = useState('30')
 
+  const fetchMedications = useCallback(async () => {
+    try {
+      const res = await api.get<{ msg: string; data: BackendMedication[] }>('/medication')
+      setMedications(res.data || [])
+    } catch {
+      addToast('Could not load medications.', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }, [addToast])
+
+  useEffect(() => { fetchMedications() }, [fetchMedications])
+
   const toggleTaken = (id: string) => {
-    setSchedule((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, taken: !item.taken } : item
-      )
-    )
+    setTaken(prev => {
+      const updated = { ...prev, [id]: !prev[id] }
+      saveTaken(updated)
+      return updated
+    })
   }
 
-  const isAM = (timeStr: string) => {
-    return timeStr.includes('AM') || timeStr.endsWith('AM')
-  }
-
-  const addMedication = () => {
+  const addMedication = async () => {
     if (!medName.trim() || !medDosage.trim()) return
     const timeDisplay = new Date(`2000-01-01T${medTime}`).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
-    const supplyTotal = parseInt(medSupply) || 30
-    const supplyCurrent = supplyTotal
-    const freqIcon: Record<string, string> = { Morning: 'light_mode', Afternoon: 'wb_sunny', Night: 'bedtime' }
-    const freqLabel = medFrequency
-    const id = crypto.randomUUID()
-
-    setSchedule(prev => [...prev, { id, name: medName, dosage: medDosage, time: timeDisplay, taken: false }])
-    setPrescriptions(prev => [...prev, {
-      name: medName,
-      dosage: medDosage,
-      type: 'pill',
-      icon: 'medication',
-      frequency: [{ icon: freqIcon[medFrequency] || '', label: freqLabel }],
-      supplyCurrent,
-      supplyTotal,
-      supplyLabel: `Refill needed in ${supplyCurrent} days`,
-    }])
-
-    setMedName('')
-    setMedDosage('')
-    setMedSupply('30')
-    setMedFrequency('Morning')
-    setMedTime('08:00')
-    setShowForm(false)
+    setSaving(true)
+    try {
+      const res = await api.post<{ msg: string; data: BackendMedication[] }>(
+        '/medication/create',
+        { name: medName.trim(), dosage: medDosage.trim(), time: timeDisplay, frequent: medFrequency, supply: medSupply }
+      )
+      setMedications(res.data || [])
+      setMedName(''); setMedDosage(''); setMedSupply('30'); setMedFrequency('morning'); setMedTime('08:00')
+      setShowForm(false)
+      addToast('Medication added successfully.', 'success')
+    } catch {
+      addToast('Could not save medication.', 'error')
+    } finally {
+      setSaving(false)
+    }
   }
+
+  const stopMedication = async (id: string) => {
+    try {
+      const res = await api.put<{ msg: string; data: BackendMedication[] }>('/medication/stop', { medicationId: id })
+      setMedications(res.data || [])
+      addToast('Medication stopped.', 'success')
+    } catch {
+      addToast('Could not stop medication.', 'error')
+    }
+  }
+
+  const active = medications.filter(m => m.status)
+  const scheduleGroups = (['morning', 'afternoon', 'night'] as const).map(freq => ({
+    freq,
+    items: active.filter(m => m.frequent === freq),
+  })).filter(g => g.items.length > 0)
 
   return (
     <main className="flex-1 flex flex-col h-full min-h-screen overflow-y-auto relative z-10 w-full bg-surface font-body-md text-on-surface antialiased">
       <div className="flex-1 p-margin-mobile md:p-stack-lg max-w-container-max-width mx-auto w-full pb-32 md:pb-stack-lg">
+
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-stack-lg">
           <div>
             <h2 className="font-headline-lg text-headline-lg-mobile md:text-headline-lg font-bold text-on-surface tracking-tight">Medication Tracker</h2>
@@ -109,10 +134,10 @@ export default function MedicationTracker() {
               </div>
               <div className="flex flex-col gap-1">
                 <label className="font-label-md text-caption text-secondary">Frequency</label>
-                <select className="bg-surface-container-low border border-outline-variant rounded-lg px-4 py-3 font-body-md outline-none focus:border-primary" value={medFrequency} onChange={e => setMedFrequency(e.target.value)}>
-                  <option value="Morning">Morning</option>
-                  <option value="Afternoon">Afternoon</option>
-                  <option value="Night">Night</option>
+                <select className="bg-surface-container-low border border-outline-variant rounded-lg px-4 py-3 font-body-md outline-none focus:border-primary" value={medFrequency} onChange={e => setMedFrequency(e.target.value as typeof medFrequency)}>
+                  <option value="morning">Morning</option>
+                  <option value="afternoon">Afternoon</option>
+                  <option value="night">Night</option>
                 </select>
               </div>
               <div className="flex flex-col gap-1">
@@ -120,8 +145,8 @@ export default function MedicationTracker() {
                 <input className="bg-surface-container-low border border-outline-variant rounded-lg px-4 py-3 font-body-md outline-none focus:border-primary" type="number" min="1" value={medSupply} onChange={e => setMedSupply(e.target.value)} />
               </div>
               <div className="flex items-end">
-                <button onClick={addMedication} className="w-full bg-primary text-white py-3 rounded-lg font-label-md hover:bg-primary/90 transition-colors flex items-center justify-center gap-2">
-                  <Icon icon="check_circle" />
+                <button onClick={addMedication} disabled={saving || !medName.trim() || !medDosage.trim()} className="w-full bg-primary text-white py-3 rounded-lg font-label-md hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40">
+                  {saving ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Icon icon="check_circle" />}
                   Save Medication
                 </button>
               </div>
@@ -129,114 +154,108 @@ export default function MedicationTracker() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-gutter">
-          <div className="lg:col-span-4 flex flex-col gap-gutter">
-            <div className="bg-surface rounded-xl border border-outline-variant p-6 shadow-sm flex flex-col h-full">
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="font-headline-md text-headline-md text-on-surface">Today's Schedule</h3>
-                <span className="bg-surface-container-high text-on-surface font-label-md text-label-md px-3 py-1 rounded-full text-xs">{new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+        {loading ? (
+          <div className="flex items-center justify-center py-20">
+            <span className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-gutter">
+            {/* Today's Schedule */}
+            <div className="lg:col-span-4 flex flex-col gap-gutter">
+              <div className="bg-surface rounded-xl border border-outline-variant p-6 shadow-sm flex flex-col h-full">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-headline-md text-headline-md text-on-surface">Today's Schedule</h3>
+                  <span className="bg-surface-container-high text-on-surface font-label-md text-label-md px-3 py-1 rounded-full text-xs">{new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                </div>
+                {active.length === 0 ? (
+                  <div className="flex-1 flex items-center justify-center">
+                    <p className="text-secondary font-body-md text-center">No medications scheduled. Add your first medication to get started.</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-4 flex-1">
+                    {scheduleGroups.map(({ freq, items }) => (
+                      <div key={freq}>
+                        <h4 className="font-caption text-caption text-secondary uppercase tracking-wider mb-3 flex items-center gap-2">
+                          <Icon icon={freqConfig[freq].icon} className="text-[16px]" /> {freqConfig[freq].label}
+                        </h4>
+                        <div className="flex flex-col gap-3">
+                          {items.map(item => (
+                            <label key={item.id} onClick={() => toggleTaken(item.id)} className="flex items-start gap-3 p-3 rounded-lg border border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low transition-colors cursor-pointer group">
+                              <div className="pt-0.5">
+                                <input type="checkbox" checked={!!taken[item.id]} onChange={() => {}} className="w-5 h-5 rounded border-outline text-green-500 focus:ring-primary transition-colors" />
+                              </div>
+                              <div className="flex-1">
+                                <p className="font-label-md text-label-md text-on-surface group-hover:text-primary transition-colors">{item.name}</p>
+                                <p className="font-caption text-caption text-secondary">{item.time}</p>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              {schedule.length === 0 ? (
-                <div className="flex-1 flex items-center justify-center">
-                  <p className="text-secondary font-body-md text-center">No medications scheduled. Add your first medication to get started.</p>
+            </div>
+
+            {/* Active Prescriptions */}
+            <div className="lg:col-span-8 flex flex-col gap-gutter">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-headline-md text-headline-md text-on-surface">Active Prescriptions</h3>
+              </div>
+              {active.length === 0 ? (
+                <div className="bg-surface rounded-xl border border-outline-variant p-12 shadow-sm flex flex-col items-center justify-center text-center">
+                  <Icon icon="medication" className="text-4xl text-outline mb-4" />
+                  <p className="font-body-md text-secondary">No active prescriptions yet.</p>
+                  <p className="font-caption text-caption text-outline mt-1">Add medications to track your prescriptions and refill schedule.</p>
                 </div>
               ) : (
-                <div className="flex flex-col gap-4 flex-1">
-                  <div>
-                    <h4 className="font-caption text-caption text-secondary uppercase tracking-wider mb-3 flex items-center gap-2">
-                      <Icon icon="light_mode" className="text-[16px]" /> Morning
-                    </h4>
-                    <div className="flex flex-col gap-3">
-                      {schedule.filter(m => isAM(m.time)).map(item => (
-                        <label key={item.id} onClick={() => toggleTaken(item.id)} className="flex items-start gap-3 p-3 rounded-lg border border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low transition-colors cursor-pointer group">
-                          <div className="pt-0.5">
-                            <input type="checkbox" checked={item.taken} onChange={() => {}} className="w-5 h-5 rounded border-outline text-green-500 focus:ring-primary transition-colors" />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-gutter">
+                  {active.map(med => {
+                    const supplyNum = parseInt(med.supply) || 0
+                    const cfg = freqConfig[med.frequent]
+                    return (
+                      <div key={med.id} className="bg-surface rounded-xl border border-outline-variant p-6 shadow-sm flex flex-col hover:border-primary/50 transition-colors group relative overflow-hidden">
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-full bg-surface-container-high flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-on-primary transition-colors">
+                              <Icon icon="medication" className="text-[24px]" />
+                            </div>
+                            <div>
+                              <h4 className="font-label-md text-label-md text-on-surface text-lg">{med.name}</h4>
+                              <p className="font-caption text-caption text-secondary">{med.dosage}</p>
+                            </div>
                           </div>
-                          <div className="flex-1">
-                            <p className="font-label-md text-label-md text-on-surface group-hover:text-primary transition-colors">{item.name}</p>
-                            <p className="font-caption text-caption text-secondary">{item.time}</p>
+                          <button onClick={() => stopMedication(med.id)} className="opacity-0 group-hover:opacity-100 p-1 text-outline hover:text-error transition-all" title="Stop medication">
+                            <Icon icon="stop_circle" />
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-2 mb-6">
+                          <span className="inline-flex items-center gap-1 bg-surface-container-highest text-on-surface-variant font-caption text-caption px-3 py-1 rounded-full">
+                            <Icon icon={cfg.icon} className="text-[14px]" /> {cfg.label}
+                          </span>
+                          <span className="inline-flex items-center gap-1 bg-surface-container-highest text-on-surface-variant font-caption text-caption px-3 py-1 rounded-full">
+                            <Icon icon="schedule" className="text-[14px]" /> {med.time}
+                          </span>
+                        </div>
+                        <div className="mt-auto">
+                          <div className="flex justify-between items-end mb-2">
+                            <span className="font-caption text-caption text-secondary">Supply</span>
+                            <span className="font-label-md text-label-md text-on-surface">{med.supply} pills</span>
                           </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="w-full h-[1px] bg-outline-variant/50 my-2" />
-                  <div>
-                    <h4 className="font-caption text-caption text-secondary uppercase tracking-wider mb-3 flex items-center gap-2">
-                      <Icon icon="wb_sunny" className="text-[16px]" /> Afternoon
-                    </h4>
-                    <div className="flex flex-col gap-3">
-                      {schedule.filter(m => !isAM(m.time)).map(item => (
-                        <label key={item.id} onClick={() => toggleTaken(item.id)} className="flex items-start gap-3 p-3 rounded-lg border border-outline-variant bg-surface-container-lowest hover:bg-surface-container-low transition-colors cursor-pointer group">
-                          <div className="pt-0.5">
-                            <input type="checkbox" checked={item.taken} onChange={() => {}} className="w-5 h-5 rounded border-outline text-green-500 focus:ring-primary transition-colors" />
+                          <div className="w-full bg-surface-variant rounded-full h-2 overflow-hidden">
+                            <div className="h-2 rounded-full bg-primary" style={{ width: supplyNum > 0 ? `${Math.min((supplyNum / 90) * 100, 100)}%` : '100%' }} />
                           </div>
-                          <div className="flex-1">
-                            <p className="font-label-md text-label-md text-on-surface group-hover:text-primary transition-colors">{item.name}</p>
-                            <p className="font-caption text-caption text-secondary">{item.time}</p>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                          <p className="font-caption text-caption text-secondary mt-2">Started {new Date(med.startedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
           </div>
-
-          <div className="lg:col-span-8 flex flex-col gap-gutter">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="font-headline-md text-headline-md text-on-surface">Active Prescriptions</h3>
-              <div className="flex items-center gap-2 text-secondary text-sm">
-                <Icon icon="sort" className="text-[18px]" />
-                <span>Sort by: Name</span>
-              </div>
-            </div>
-            {prescriptions.length === 0 ? (
-              <div className="bg-surface rounded-xl border border-outline-variant p-12 shadow-sm flex flex-col items-center justify-center text-center">
-                <Icon icon="medication" className="text-4xl text-outline mb-4" />
-                <p className="font-body-md text-secondary">No active prescriptions yet.</p>
-                <p className="font-caption text-caption text-outline mt-1">Add medications to track your prescriptions and refill schedule.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-gutter">
-                {prescriptions.map((med, i) => (
-                  <div key={i} className="bg-surface rounded-xl border border-outline-variant p-6 shadow-sm flex flex-col hover:border-primary/50 transition-colors group relative overflow-hidden">
-                    <div className="flex items-start justify-between mb-4 relative z-10">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-surface-container-high flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-on-primary transition-colors">
-                          <Icon icon={med.icon} className="text-[24px]" />
-                        </div>
-                        <div>
-                          <h4 className="font-label-md text-label-md text-on-surface text-lg">{med.name}</h4>
-                          <p className="font-caption text-caption text-secondary">{med.dosage}</p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2 mb-6 relative z-10">
-                      {med.frequency.map((f, j) => (
-                        <span key={j} className="inline-flex items-center gap-1 bg-surface-container-highest text-on-surface-variant font-caption text-caption px-3 py-1 rounded-full">
-                          {f.icon && <Icon icon={f.icon} className="text-[14px]" />}
-                          {f.label}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="mt-auto relative z-10">
-                      <div className="flex justify-between items-end mb-2">
-                        <span className="font-caption text-caption text-secondary">Supply Left</span>
-                        <span className="font-label-md text-label-md text-on-surface">{med.supplyCurrent} / {med.supplyTotal} pills</span>
-                      </div>
-                      <div className="w-full bg-surface-variant rounded-full h-2 overflow-hidden">
-                        <div className="h-2 rounded-full bg-primary" style={{ width: `${(med.supplyCurrent / med.supplyTotal) * 100}%` }} />
-                      </div>
-                      <p className="font-caption text-caption text-secondary mt-2">{med.supplyLabel}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+        )}
       </div>
     </main>
   )

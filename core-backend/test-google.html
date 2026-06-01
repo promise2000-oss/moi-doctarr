@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Google Sign-In Test</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+    pre { background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; word-break: break-all; white-space: pre-wrap; }
+    button { padding: 8px 16px; margin-top: 10px; cursor: pointer; }
+    #result { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h2>Google Sign-In Test</h2>
+  <p>Click the button below to sign in with Google and get your <code>idToken</code> to test the API.</p>
+
+  <!-- Replace with your actual GOOGLE_CLIENT_ID -->
+  <div id="g_id_onload"
+    data-client_id="724611958356-c5598gr1jg6hlcbcidtlm71njam45mqf.apps.googleusercontent.com"
+    data-callback="handleCredentialResponse">
+  </div>
+  <div class="g_id_signin" data-type="standard"></div>
+
+  <div id="result" style="display:none">
+    <h3>Your idToken (copy this):</h3>
+    <pre id="token-display"></pre>
+    <button onclick="copyToken()">Copy Token</button>
+    <hr/>
+    <h3>Now send it to the API:</h3>
+    <pre id="curl-display"></pre>
+    <button onclick="sendToAPI()">Test API directly</button>
+    <pre id="api-result"></pre>
+  </div>
+
+  <script>
+    let idToken = "";
+
+    function handleCredentialResponse(response) {
+      idToken = response.credential;
+      document.getElementById("result").style.display = "block";
+      document.getElementById("token-display").textContent = idToken;
+      document.getElementById("curl-display").textContent =
+        `curl -X POST http://localhost:4455/api/v1/auth/google \\\n` +
+        `  -H "Content-Type: application/json" \\\n` +
+        `  -d '{"idToken":"${idToken.slice(0,30)}...","fullName":"Test","countryType":"Nigeria"}'`;
+    }
+
+    function copyToken() {
+      navigator.clipboard.writeText(idToken);
+      alert("Token copied!");
+    }
+
+    async function sendToAPI() {
+      const resultEl = document.getElementById("api-result");
+      resultEl.textContent = "Sending...";
+      try {
+        const res = await fetch("http://localhost:4455/api/v1/auth/google", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idToken, fullName: "Test User", countryType: "Nigeria" })
+        });
+        const data = await res.json();
+        resultEl.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        resultEl.textContent = "Error: " + e.message;
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,13 +1,31 @@
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { scopeKey } from '../utils/storage'
+import { api, getAccessToken, setTokens, clearTokens } from '../services/api'
 
-type RegisteredUser = {
-  id: string
-  fullName: string
+// ---------- Types ----------
+
+export type BackendUser = {
+  _id: string
+  userName: string
   email: string
-  passwordHash: string
-  verified: boolean
-  createdAt: string
+  isVerified: boolean
+  role: 'user' | 'admin'
+  demographics?: {
+    gender?: string
+    age?: string
+    currentCondition?: string
+    bloodType?: string
+    country?: string
+  }
+  phone?: string
+  preference?: {
+    emailNotification: boolean
+    smsAlert: boolean
+    twoFactorAuth: boolean
+  }
+  notifications?: Array<{ message: string; date: string }>
+  createdAt?: string
+  lastLogin?: string
 }
 
 export type TriageSession = {
@@ -25,90 +43,33 @@ export type TriageSession = {
   severityIcon?: string
 }
 
-type SessionTokens = {
-  accessToken: string
-  refreshToken: string
-  expiresAt: number
-}
+type AuthTokens = { authorization: string; refreshToken: string }
 
-type LoginResult = { success: true } | { success: false; error: string; lockedUntil?: number }
+type LoginResult =
+  | { success: true }
+  | { success: false; error: string; needsVerification?: true; pendingEmail?: string }
 type SignUpResult = { success: true } | { success: false; error: string }
 
 type AuthState = {
-  user: RegisteredUser | null
+  user: BackendUser | null
   isAuthenticated: boolean
   isLoading: boolean
 }
 
 type AuthContextValue = AuthState & {
-  signIn: (email: string, password: string, rememberMe?: boolean) => LoginResult
-  signUp: (fullName: string, email: string, password: string) => SignUpResult
-  verifyEmail: (code: string) => boolean
-  resendVerificationCode: () => void
-  signOut: () => void
+  signIn: (email: string, password: string, rememberMe?: boolean) => Promise<LoginResult>
+  signUp: (fullName: string, email: string, password: string) => Promise<SignUpResult>
+  signInWithGoogle: (accessToken: string) => Promise<LoginResult>
+  verifyEmail: (code: string) => Promise<boolean>
+  resendVerificationCode: () => Promise<void>
+  signOut: () => Promise<void>
   sessions: TriageSession[]
   addSession: (session: TriageSession) => void
   removeSession: (id: string) => void
   userChangeKey: number
 }
 
-const USERS_KEY = 'doctarr_users'
-const ATTEMPTS_KEY = 'doctarr_login_attempts'
-const SESSION_KEY = 'doctarr_session'
-const VERIFICATION_KEY = 'doctarr_verification_code'
-const MAX_ATTEMPTS = 5
-const LOCKOUT_MS = 15 * 60 * 1000
-
-const AuthContext = createContext<AuthContextValue | null>(null)
-
-function getUsers(): RegisteredUser[] {
-  try { return JSON.parse(localStorage.getItem(USERS_KEY) || '[]') } catch { return [] }
-}
-
-function saveUsers(users: RegisteredUser[]) {
-  try { localStorage.setItem(USERS_KEY, JSON.stringify(users)) } catch {}
-}
-
-function hashPassword(password: string): string {
-  let hash = 0
-  for (let i = 0; i < password.length; i++) {
-    hash = ((hash << 5) - hash) + password.charCodeAt(i)
-    hash |= 0
-  }
-  return `sim_bcrypt_${Math.abs(hash).toString(36)}`
-}
-
-function generateTokens(userId: string): SessionTokens {
-  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000
-  const accessToken = btoa(JSON.stringify({ sub: userId, iat: Date.now(), exp: expiresAt, type: 'access' })) + '.' + btoa(String(Math.random()))
-  const refreshToken = btoa(JSON.stringify({ sub: userId, iat: Date.now(), exp: expiresAt + 86400000, type: 'refresh' })) + '.' + btoa(String(Math.random()))
-  return { accessToken, refreshToken, expiresAt }
-}
-
-function rotateTokens(userId: string): SessionTokens {
-  const tokens = generateTokens(userId)
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify(tokens)) } catch {}
-  return tokens
-}
-
-function loadSessionTokens(): SessionTokens | null {
-  try {
-    const data = localStorage.getItem(SESSION_KEY)
-    return data ? JSON.parse(data) : null
-  } catch { return null }
-}
-
-function clearSession() {
-  try { localStorage.removeItem(SESSION_KEY) } catch {}
-}
-
-function getLoginAttempts(): Record<string, { count: number; lastAttempt: number; lockedUntil: number | null }> {
-  try { return JSON.parse(localStorage.getItem(ATTEMPTS_KEY) || '{}') } catch { return {} }
-}
-
-function saveLoginAttempts(attempts: Record<string, { count: number; lastAttempt: number; lockedUntil: number | null }>) {
-  try { localStorage.setItem(ATTEMPTS_KEY, JSON.stringify(attempts)) } catch {}
-}
+// ---------- Helpers ----------
 
 function loadSessions(): TriageSession[] {
   try {
@@ -121,151 +82,145 @@ function saveSessions(sessions: TriageSession[]) {
   try { localStorage.setItem(scopeKey('doctarr_sessions'), JSON.stringify(sessions)) } catch {}
 }
 
-function generateVerificationCode(): string {
-  const code = String(Math.floor(100000 + Math.random() * 900000))
-  try { localStorage.setItem(VERIFICATION_KEY, code) } catch {}
-  return code
+async function fetchUser(): Promise<BackendUser | null> {
+  try {
+    const res = await api.get<{ msg: string; data: BackendUser }>('/user/listData')
+    return res.data ?? null
+  } catch { return null }
 }
 
-function getStoredVerificationCode(): string | null {
-  try { return localStorage.getItem(VERIFICATION_KEY) } catch { return null }
+function seedLocalStorage(user: BackendUser) {
+  try { localStorage.setItem('doctarr_current_user_email', user.email) } catch {}
+  try { localStorage.setItem(scopeKey('doctarr_name'), user.userName) } catch {}
 }
 
-function clearVerificationCode() {
-  try { localStorage.removeItem(VERIFICATION_KEY) } catch {}
+function mapApiError(err: unknown): string {
+  const e = err as { err?: string; status?: number }
+  switch (e?.err) {
+    case 'account_exist': return 'This email is already registered. Log in instead?'
+    case 'invalid_account': return 'Incorrect email or password'
+    case 'account_restricted': return 'Your account has been restricted. Contact support.'
+    case 'account_not_verified': return 'Please verify your email before signing in.'
+    default: return 'Something went wrong. Please try again.'
+  }
 }
+
+// ---------- Context ----------
+
+const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AuthState>(() => {
-    try {
-      const tokens = loadSessionTokens()
-      if (tokens && tokens.expiresAt > Date.now()) {
-        const users = getUsers()
-        const payload = JSON.parse(atob(tokens.accessToken.split('.')[0]))
-        const user = users.find(u => u.id === payload.sub)
-        if (user) return { user, isAuthenticated: true, isLoading: false }
-      }
-      if (tokens && tokens.expiresAt <= Date.now()) clearSession()
-    } catch {}
-    return { user: null, isAuthenticated: false, isLoading: false }
-  })
-
+  const [state, setState] = useState<AuthState>({ user: null, isAuthenticated: false, isLoading: true })
   const [sessions, setSessions] = useState<TriageSession[]>(loadSessions)
   const [userChangeKey, setUserChangeKey] = useState(0)
 
+  // Restore session on mount
+  useEffect(() => {
+    const token = getAccessToken()
+    if (!token) {
+      setState({ user: null, isAuthenticated: false, isLoading: false })
+      return
+    }
+    fetchUser().then(user => {
+      if (user?.isVerified) {
+        seedLocalStorage(user)
+        setState({ user, isAuthenticated: true, isLoading: false })
+      } else {
+        clearTokens()
+        setState({ user: null, isAuthenticated: false, isLoading: false })
+      }
+    })
+  }, [])
+
   useEffect(() => { saveSessions(sessions) }, [sessions])
 
-  const signIn = useCallback((email: string, password: string, rememberMe?: boolean): LoginResult => {
-    const normalizedEmail = email.toLowerCase().trim()
-    const users = getUsers()
-    const attempts = getLoginAttempts()
-    const record = attempts[normalizedEmail]
-
-    if (record?.lockedUntil && Date.now() < record.lockedUntil) {
-      const remaining = Math.ceil((record.lockedUntil - Date.now()) / 60000)
-      return { success: false, error: `Too many attempts. Try again in ${remaining} minute${remaining === 1 ? '' : 's'}.`, lockedUntil: record.lockedUntil }
-    }
-
-    if (record?.lockedUntil && Date.now() >= record.lockedUntil) {
-      delete attempts[normalizedEmail]
-      saveLoginAttempts(attempts)
-    }
-
-    const user = users.find(u => u.email === normalizedEmail)
-    if (!user || user.passwordHash !== hashPassword(password)) {
-      const newRecord = attempts[normalizedEmail] || { count: 0, lastAttempt: 0, lockedUntil: null }
-      newRecord.count++
-      newRecord.lastAttempt = Date.now()
-      if (newRecord.count >= MAX_ATTEMPTS) {
-        newRecord.lockedUntil = Date.now() + LOCKOUT_MS
+  const signIn = useCallback(async (email: string, password: string): Promise<LoginResult> => {
+    try {
+      const res = await api.post<AuthTokens>('/auth/manualAuthentication', {
+        type: 'SIGNIN_MANUALLY',
+        email: email.toLowerCase().trim(),
+        password,
+      }, null)
+      setTokens(res.authorization, res.refreshToken)
+      const user = await fetchUser()
+      if (!user) return { success: false, error: 'Could not load user data.' }
+      seedLocalStorage(user)
+      setState({ user, isAuthenticated: true, isLoading: false })
+      setUserChangeKey(k => k + 1)
+      return { success: true }
+    } catch (err) {
+      const e = err as { err?: string; authorization?: string }
+      if (e?.err === 'account_not_verified' && e.authorization) {
+        // Store the temp token so the verify page can call /auth/verify
+        setTokens(e.authorization, '')
+        return {
+          success: false,
+          error: 'Your email is not verified. We\'ve sent a fresh code — check your inbox.',
+          needsVerification: true,
+          pendingEmail: email.toLowerCase().trim(),
+        }
       }
-      attempts[normalizedEmail] = newRecord
-      saveLoginAttempts(attempts)
-      return { success: false, error: 'Incorrect email or password' }
+      return { success: false, error: mapApiError(err) }
     }
-
-    delete attempts[normalizedEmail]
-    saveLoginAttempts(attempts)
-
-    if (!user.verified) {
-      return { success: false, error: 'Please verify your email before signing in.' }
-    }
-
-    const tokens = generateTokens(user.id)
-    if (rememberMe) {
-      try { localStorage.setItem(SESSION_KEY, JSON.stringify(tokens)) } catch {}
-    } else {
-      try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(tokens)) } catch {}
-    }
-
-    try { localStorage.setItem('doctarr_current_user_email', user.email) } catch {}
-
-    setState({ user, isAuthenticated: true, isLoading: false })
-    setUserChangeKey(k => k + 1)
-    return { success: true }
   }, [])
 
-  const signUp = useCallback((fullName: string, email: string, password: string): SignUpResult => {
-    const normalizedEmail = email.toLowerCase().trim()
-    const users = getUsers()
-
-    if (users.some(u => u.email === normalizedEmail)) {
-      return { success: false, error: 'This email is already registered. Log in instead?' }
+  const signUp = useCallback(async (fullName: string, email: string, password: string): Promise<SignUpResult> => {
+    try {
+      const res = await api.post<AuthTokens>('/auth/manualAuthentication', {
+        type: 'SIGNUP_MANUALLY',
+        email: email.toLowerCase().trim(),
+        password,
+        fullName,
+      }, null)
+      setTokens(res.authorization, res.refreshToken)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: mapApiError(err) }
     }
-
-    const newUser: RegisteredUser = {
-      id: 'user_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      fullName,
-      email: normalizedEmail,
-      passwordHash: hashPassword(password),
-      verified: false,
-      createdAt: new Date().toISOString(),
-    }
-
-    saveUsers([...users, newUser])
-    generateVerificationCode()
-    setState(prev => ({ ...prev, user: newUser }))
-    return { success: true }
   }, [])
 
-  const verifyEmail = useCallback((code: string): boolean => {
-    // TODO: Replace with real backend verification
-    if (code.length !== 6) return false
-
-    const users = getUsers()
-    const currentUser = state.user
-    if (!currentUser) return false
-
-    const updated = users.map(u => u.id === currentUser.id ? { ...u, verified: true } : u)
-    saveUsers(updated)
-    clearVerificationCode()
-
-    const verifiedUser = updated.find(u => u.id === currentUser.id)!
-    const tokens = generateTokens(verifiedUser.id)
-    try { localStorage.setItem(SESSION_KEY, JSON.stringify(tokens)) } catch {}
-    try { localStorage.setItem('doctarr_current_user_email', verifiedUser.email) } catch {}
-
-    setState({ user: verifiedUser, isAuthenticated: true, isLoading: false })
-    setUserChangeKey(k => k + 1)
-    return true
-  }, [state.user])
-
-  const resendVerificationCode = useCallback(() => {
-    generateVerificationCode()
+  const signInWithGoogle = useCallback(async (accessToken: string): Promise<LoginResult> => {
+    try {
+      const res = await api.post<AuthTokens>('/auth/google', { accessToken }, null)
+      setTokens(res.authorization, res.refreshToken)
+      const user = await fetchUser()
+      if (!user) return { success: false, error: 'Could not load user data.' }
+      seedLocalStorage(user)
+      setState({ user, isAuthenticated: true, isLoading: false })
+      setUserChangeKey(k => k + 1)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: mapApiError(err) }
+    }
   }, [])
 
-  const signOut = useCallback(() => {
-    const tokens = loadSessionTokens()
-    if (tokens) {
-      const payload = JSON.parse(atob(tokens.refreshToken.split('.')[0]))
-      payload.exp = 0
-    }
-    clearSession()
-    try { sessionStorage.removeItem(SESSION_KEY) } catch {}
+  const verifyEmail = useCallback(async (code: string): Promise<boolean> => {
+    try {
+      await api.post<{ msg: string }>('/auth/verify', { verificationCode: code })
+      const user = await fetchUser()
+      if (!user) return false
+      seedLocalStorage(user)
+      setState({ user, isAuthenticated: true, isLoading: false })
+      setUserChangeKey(k => k + 1)
+      return true
+    } catch { return false }
+  }, [])
+
+  const resendVerificationCode = useCallback(async () => {
+    try {
+      await api.post('/auth/resendVerification', undefined)
+    } catch { /* silent — toast is shown by the caller */ }
+  }, [])
+
+  const signOut = useCallback(async () => {
+    try {
+      await api.post('/auth/logout', undefined)
+    } catch { /* best-effort logout */ }
+    clearTokens()
+    try { localStorage.removeItem('doctarr_current_user_email') } catch {}
     setState({ user: null, isAuthenticated: false, isLoading: false })
     setSessions([])
     setUserChangeKey(k => k + 1)
-    try { localStorage.removeItem('doctarr_current_user_email') } catch {}
   }, [])
 
   const addSession = useCallback((session: TriageSession) => {
@@ -277,7 +232,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ ...state, signIn, signUp, verifyEmail, resendVerificationCode, signOut, sessions, addSession, removeSession, userChangeKey }}>
+    <AuthContext.Provider value={{ ...state, signIn, signUp, signInWithGoogle, verifyEmail, resendVerificationCode, signOut, sessions, addSession, removeSession, userChangeKey }}>
       {children}
     </AuthContext.Provider>
   )

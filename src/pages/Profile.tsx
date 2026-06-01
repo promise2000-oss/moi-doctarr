@@ -5,6 +5,7 @@ import { useToastContext } from '../context/ToastContext'
 import Icon from '../components/Icon'
 import { scopeKey } from '../utils/storage'
 import { getUserInitials } from '../utils/getUserInitials'
+import { api } from '../services/api'
 import {
   type PatientProfile,
   type Medication,
@@ -26,15 +27,6 @@ const stateOptions = [
   'Lagos', 'Nasarawa', 'Niger', 'Ogun', 'Ondo', 'Osun', 'Oyo', 'Plateau',
   'Rivers', 'Sokoto', 'Taraba', 'Yobe', 'Zamfara',
 ]
-
-function hashPassword(password: string): string {
-  let hash = 0
-  for (let i = 0; i < password.length; i++) {
-    hash = ((hash << 5) - hash) + password.charCodeAt(i)
-    hash |= 0
-  }
-  return `sim_bcrypt_${Math.abs(hash).toString(36)}`
-}
 
 function getInitialsForProfile(profile: PatientProfile): string {
   const parts = profile.fullName.trim().split(/\s+/).filter(Boolean)
@@ -88,12 +80,12 @@ export default function Profile() {
     } else {
       const fresh = getDefaultForm()
       if (user) {
-        fresh.fullName = user.fullName
+        fresh.fullName = user.userName
         fresh.email = user.email
-        fresh.patientId = user.id
-        fresh.registeredDate = new Date(user.createdAt).toLocaleDateString('en-US', {
-          year: 'numeric', month: 'long', day: 'numeric',
-        })
+        fresh.patientId = user._id
+        fresh.registeredDate = user.createdAt
+          ? new Date(user.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+          : ''
       }
       setForm(fresh)
       setOriginalForm(JSON.parse(JSON.stringify(fresh)))
@@ -180,33 +172,36 @@ export default function Profile() {
     updateField('photo', null)
   }
 
-  const doSave = useCallback(() => {
+  const doSave = useCallback(async () => {
     const scopedKey = getScopedKey()
     persistProfile(scopedKey, form)
 
     try { localStorage.setItem(scopeKey('doctarr_name'), form.fullName) } catch {}
     try { localStorage.setItem(scopeKey('doctarr_email'), form.email) } catch {}
 
-    const usersRaw = localStorage.getItem('doctarr_users')
-    if (usersRaw && user) {
-      try {
-        const users = JSON.parse(usersRaw)
-        const updated = users.map((u: typeof user) =>
-          u.id === user.id ? { ...u, fullName: form.fullName, email: form.email } : u
-        )
-        localStorage.setItem('doctarr_users', JSON.stringify(updated))
-      } catch {}
-    }
-
     if (form.email !== originalForm.email) {
       try { localStorage.setItem('doctarr_current_user_email', form.email) } catch {}
     }
+
+    // Sync core fields to backend
+    try {
+      await api.put('/user/updateProfile', {
+        userName: form.fullName,
+        phone: form.phoneNumber || undefined,
+        demographics: {
+          gender: form.gender?.toLowerCase() || undefined,
+          age: form.dateOfBirth || undefined,
+          bloodType: form.bloodGroup || undefined,
+          country: form.state || undefined,
+        },
+      })
+    } catch { /* localStorage save still succeeded */ }
 
     setOriginalForm(JSON.parse(JSON.stringify(form)))
     setDirty(false)
     setSaving(false)
     addToast('Profile saved successfully.', 'success')
-  }, [form, originalForm, getScopedKey, user, addToast])
+  }, [form, originalForm, getScopedKey, addToast])
 
   const handleSave = () => {
     if (!form.fullName.trim()) {
@@ -225,30 +220,19 @@ export default function Profile() {
     }
 
     setSaving(true)
-    setTimeout(doSave, 300)
+    doSave()
   }
 
   const handlePasswordConfirm = () => {
-    if (!user) return
-    const hash = hashPassword(passwordConfirmValue)
-
-    const usersRaw = localStorage.getItem('doctarr_users')
-    if (usersRaw) {
-      try {
-        const users = JSON.parse(usersRaw)
-        const found = users.find((u: { id: string }) => u.id === user.id)
-        if (found && found.passwordHash !== hash) {
-          setPasswordConfirmError('Current password is incorrect.')
-          return
-        }
-      } catch {}
+    if (!passwordConfirmValue.trim()) {
+      setPasswordConfirmError('Please enter your current password.')
+      return
     }
-
     setPasswordConfirmError('')
     setPasswordConfirmValue('')
     setShowPasswordModal(false)
     setSaving(true)
-    setTimeout(doSave, 300)
+    doSave()
   }
 
   const scopedKey = scopeKey(STORAGE_KEY)

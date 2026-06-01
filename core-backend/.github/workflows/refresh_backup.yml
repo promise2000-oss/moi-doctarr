@@ -1,0 +1,42 @@
+name: Refresh MongoDB Backup
+
+on:
+  schedule:
+    - cron: "0 0 25 */2 *" 
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+
+    steps:
+      - name: Find latest backup artifact
+        id: find
+        run: |
+          ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/artifacts \
+            --jq '[.artifacts[] | select(.name | startswith("mongodb-backup-")) | select(.expired == false)] | sort_by(.created_at) | last | .id')
+
+          if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+            echo "No valid backup artifact found. Exiting."
+            exit 1
+          fi
+
+          echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download latest backup
+        run: |
+          gh api repos/${{ github.repository }}/actions/artifacts/${{ steps.find.outputs.artifact_id }}/zip \
+            > backup-refreshed.zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-upload with fresh retention
+        uses: actions/upload-artifact@v4
+        with:
+          name: mongodb-backup-${{ github.run_id }}
+          path: backup-refreshed.zip
+          retention-days: 90
